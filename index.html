@@ -1,0 +1,226 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>复合肥配方推荐工具</title>
+  <link rel="stylesheet" href="styles.css?v=20260819173000">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>复合肥配方推荐工具</h1>
+        <p>目标配方、指标约束、原料维护</p>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="主功能">
+      <button class="tab is-active" type="button" role="tab" aria-selected="true" data-tab="recommendations">推荐配方</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-tab="materials">原料维护</button>
+    </nav>
+
+    <section id="recommendationsView" class="tab-panel" role="tabpanel">
+      <div class="workspace">
+      <aside class="panel targets-panel">
+        <div class="panel-title">
+          <h2>目标</h2>
+        </div>
+        <div class="target-grid">
+          <label class="field wide-field">
+            <span>配合式</span>
+            <div class="formula-inputs">
+              <input id="formulaN" type="number" step="1" min="0" inputmode="numeric" placeholder="18">
+              <b>-</b>
+              <input id="formulaP" type="number" step="1" min="0" inputmode="numeric" placeholder="7">
+              <b>-</b>
+              <input id="formulaK" type="number" step="1" min="0" inputmode="numeric" placeholder="10">
+            </div>
+          </label>
+          <label class="field wide-field">
+            <span>原料数量上限</span>
+            <select id="maxMaterialCount">
+              <option value="1">1 种</option>
+              <option value="2">2 种</option>
+              <option value="3">3 种</option>
+              <option value="4">4 种</option>
+              <option value="5">5 种</option>
+              <option value="6">6 种</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>总养分 %</span>
+            <input id="totalNutrientsMin" type="number" readonly aria-readonly="true">
+          </label>
+          <label class="field">
+            <span>单养分安全下调 %</span>
+            <input id="nutrientDrop" type="number" step="0.1" min="0" max="1.5">
+          </label>
+          <label class="field">
+            <span>氯离子浓度</span>
+            <select id="chlorideGrade">
+              <option value="sulfur">硫基 ＜3%</option>
+              <option value="low">低氯 ≤15%</option>
+              <option value="medium">中氯 ≤30%</option>
+              <option value="high">高氯 ＞30%</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>水溶磷比例 ≥ %</span>
+            <input id="waterSolublePMin" type="number" step="1" min="0" inputmode="numeric">
+          </label>
+          <label class="field">
+            <span>成品水分 %</span>
+            <input id="finishedMoisture" type="number" step="0.01" min="0">
+          </label>
+          <label class="field">
+            <span>加工费用 元/t</span>
+            <select id="processingFee"></select>
+          </label>
+        </div>
+
+        <section id="requiredMaterialsPanel" class="required-materials-panel">
+          <div class="panel-title">
+            <div>
+              <h3>必选原料</h3>
+              <p class="panel-hint">选择后，推荐配方必须包含这些原料。</p>
+            </div>
+          </div>
+          <div class="required-materials-grid">
+            <details class="required-material-select">
+              <summary><span>磷源</span><small id="requiredPhosphorusSummary">未选择</small></summary>
+              <div id="requiredPhosphorusOptions" class="required-options"></div>
+            </details>
+            <details class="required-material-select">
+              <summary><span>氮源</span><small id="requiredNitrogenSummary">未选择</small></summary>
+              <div id="requiredNitrogenOptions" class="required-options"></div>
+            </details>
+            <details class="required-material-select">
+              <summary><span>钾源</span><small id="requiredPotassiumSummary">未选择</small></summary>
+              <div id="requiredPotassiumOptions" class="required-options"></div>
+            </details>
+          </div>
+        </section>
+
+        <details class="more-indicators">
+          <summary class="more-indicators-summary">
+            <span>更多指标</span>
+          </summary>
+          <div class="table-scroll constraints-scroll">
+            <table class="data-table compact-table">
+              <thead>
+                <tr>
+                  <th>指标</th>
+                  <th>最低</th>
+                  <th>最高</th>
+                </tr>
+              </thead>
+              <tbody id="constraintsBody"></tbody>
+            </table>
+          </div>
+        </details>
+        <div class="target-actions">
+          <label class="field compact">
+            <span>工艺</span>
+            <select id="processSelect"></select>
+          </label>
+          <button id="runButton" class="primary" type="button">生成推荐</button>
+        </div>
+      </aside>
+
+      <section class="panel results-panel">
+        <div class="panel-title">
+          <h2>推荐配方</h2>
+          <span id="resultMeta" class="muted"></span>
+        </div>
+        <div id="results" class="results-grid"></div>
+      </section>
+      </div>
+    </section>
+
+    <section id="materialsView" class="tab-panel is-hidden" role="tabpanel" hidden>
+      <section id="materialsPanel" class="panel materials-panel">
+        <div class="panel-title">
+          <div>
+            <h2>原料维护</h2>
+            <p class="panel-hint">列表展示常用字段，完整指标在单个原料编辑器中维护。</p>
+          </div>
+          <div class="button-row">
+            <button id="addMaterialButton" class="primary">新增原料</button>
+            <button id="exportButton">导出数据</button>
+            <button id="importButton">导入数据</button>
+            <button id="resetButton" class="danger">恢复初始</button>
+            <input id="importFile" type="file" accept="application/json" hidden>
+          </div>
+        </div>
+        <div id="materialCategoryTabs" class="category-tabs" role="tablist" aria-label="原料类别"></div>
+        <div class="table-scroll materials-scroll">
+          <table id="materialsTable" class="data-table materials-table">
+            <thead id="materialsHead"></thead>
+            <tbody id="materialsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <dialog id="materialDialog" class="material-dialog">
+        <form method="dialog" class="material-dialog-form">
+          <div class="dialog-header">
+            <div>
+              <h2 id="materialDialogTitle">编辑原料</h2>
+              <p class="panel-hint">修改后保存，配方推荐会使用新的原料参数。</p>
+            </div>
+            <button id="closeMaterialDialogButton" type="submit" value="cancel" aria-label="关闭">关闭</button>
+          </div>
+          <input id="materialEditIndex" type="hidden">
+          <div class="material-basic-grid">
+            <label class="field field-required"><span>原料名称</span><input id="materialName" type="text" aria-required="true"></label>
+            <label class="field field-required"><span>类别</span><select id="materialCategory" aria-required="true"></select></label>
+            <label class="field field-required"><span>单价 元/t</span><input id="materialPrice" type="number" step="0.01" min="0" aria-required="true"></label>
+            <label class="field"><span>上限 kg/t</span><input id="materialMaxKg" type="number" step="1" min="0"></label>
+            <label class="field"><span>损耗系数</span><input id="materialLossFactor" type="number" step="0.001" min="0"></label>
+          <label class="field field-required material-enabled-field">
+            <span>参与推荐</span>
+            <select id="materialEnabled" aria-required="true">
+              <option value="">请选择</option>
+              <option value="true">是</option>
+              <option value="false">否</option>
+            </select>
+          </label>
+          </div>
+          <div class="dialog-section-title">
+            <h3>指标参数</h3>
+            <span class="muted">按指标分组维护</span>
+          </div>
+          <div id="materialIndicators" class="material-indicators-grid"></div>
+          <div class="dialog-actions">
+            <button id="saveMaterialButton" class="primary" type="button">保存原料</button>
+            <button type="submit" value="cancel">取消</button>
+          </div>
+        </form>
+      </dialog>
+    </section>
+
+    <dialog id="resultMaterialDialog" class="material-info-dialog">
+      <form method="dialog" class="material-info-form">
+        <div class="dialog-header">
+          <div>
+            <h2 id="resultMaterialTitle">原料信息</h2>
+            <p class="panel-hint">当前配方所用原料的主要参数</p>
+          </div>
+          <button type="submit" value="close" aria-label="关闭">关闭</button>
+        </div>
+        <input id="resultMaterialId" type="hidden">
+        <div id="resultMaterialInfo" class="material-info-grid"></div>
+        <div class="dialog-actions">
+          <button id="saveResultMaterialButton" class="primary" type="button">保存参数</button>
+          <button type="submit" value="close">取消</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </main>
+
+  <script src="app.js?v=20260819173000"></script>
+</body>
+</html>
