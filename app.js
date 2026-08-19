@@ -18,6 +18,11 @@ const INDICATORS = [
 ];
 
 const STORAGE_KEY = "compound-fertilizer-tool-v2";
+const NUTRIENT_PRIORITY_OPTIONS = [
+  { value: "N", label: "氮" },
+  { value: "P", label: "磷" },
+  { value: "K", label: "钾" }
+];
 
 const SINGLE_NUTRIENT_STANDARD_TOLERANCE = 1.5;
 const CHLORIDE_GRADES = {
@@ -134,6 +139,7 @@ function buildInitialState() {
       formulaText,
       totalNutrientsMin: seed.target.n + seed.target.p + seed.target.k,
       nutrientDrop: 1,
+      nutrientReductionPriority: [],
       chlorideGrade: seed.name === "转鼓" ? "medium" : "low",
       waterSolublePMin: "",
       targetN: seed.target.n,
@@ -212,6 +218,9 @@ function init() {
     "formulaP",
     "formulaK",
     "maxMaterialCount",
+    "nutrientPriority1",
+    "nutrientPriority2",
+    "nutrientPriority3",
     "totalNutrientsMin",
     "nutrientDrop",
     "chlorideGrade",
@@ -227,6 +236,7 @@ function init() {
     "resultMaterialId",
     "saveResultMaterialButton",
     "toast",
+    "loadingOverlay",
     "materialsHead",
     "materialsBody",
     "materialCategoryTabs",
@@ -259,6 +269,11 @@ function init() {
     ui[id] = document.getElementById(id);
   });
   ui.tabButtons = Array.from(document.querySelectorAll(".tab[data-tab]"));
+  ui.nutrientPriorityInputs = [
+    ui.nutrientPriority1,
+    ui.nutrientPriority2,
+    ui.nutrientPriority3
+  ];
 
   renderProcessOptions();
   renderMaterialCategoryOptions();
@@ -273,6 +288,14 @@ function bindEvents() {
   });
 
   ui.runButton.addEventListener("click", runRecommendation);
+
+  ui.nutrientPriorityInputs.forEach((input) => {
+    input.addEventListener("change", () => {
+      collectSettings();
+      renderNutrientPriorityInputs();
+      saveState();
+    });
+  });
 
   ui.results.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-material-id]");
@@ -458,12 +481,30 @@ function renderTargets() {
   ui.maxMaterialCount.value = String(settings.maxMaterialCount);
   syncTotalNutrientsFromFormula();
   ui.nutrientDrop.value = settings.nutrientDrop;
+  renderNutrientPriorityInputs();
   ui.chlorideGrade.value = settings.chlorideGrade;
   settings.waterSolublePMin = normalizeIntegerValue(settings.waterSolublePMin);
   ui.waterSolublePMin.value = settings.waterSolublePMin;
   ui.finishedMoisture.value = settings.finishedMoisture;
   ui.processingFee.value = settings.processingFee;
   renderRequiredMaterialOptions();
+}
+
+function renderNutrientPriorityInputs() {
+  const settings = currentSettings();
+  const priority = normalizeNutrientPriority(settings.nutrientReductionPriority);
+  settings.nutrientReductionPriority = priority;
+  ui.nutrientPriorityInputs.forEach((input, index) => {
+    const selected = priority[index] || "";
+    const usedByOtherInputs = new Set(priority.filter((value, priorityIndex) => priorityIndex !== index && value));
+    input.innerHTML = `
+      <option value="">未设置</option>
+      ${NUTRIENT_PRIORITY_OPTIONS.map((option) => `
+        <option value="${option.value}" ${usedByOtherInputs.has(option.value) ? "disabled" : ""}>${option.label}</option>
+      `).join("")}
+    `;
+    input.value = selected;
+  });
 }
 
 function renderConstraints() {
@@ -628,14 +669,36 @@ function updateMaterialFromInput(material, input) {
 }
 
 function runRecommendation() {
+  if (ui.loadingOverlay && !ui.loadingOverlay.hidden) return;
   collectSettings();
   commitSelectedProcess();
   saveState();
-  const process = currentProcess();
-  const settings = currentSettings();
-  const result = generateRecommendations(process, settings);
-  latestCandidates = result.candidates;
-  renderResults(result);
+  setRecommendationLoading(true);
+  const calculate = () => {
+    try {
+      const process = currentProcess();
+      const settings = currentSettings();
+      const result = generateRecommendations(process, settings);
+      latestCandidates = result.candidates;
+      renderResults(result);
+    } catch (error) {
+      console.error(error);
+      latestCandidates = [];
+      renderResults({ candidates: [], error: "配方生成失败，请稍后重试。" });
+    } finally {
+      setRecommendationLoading(false);
+    }
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => setTimeout(calculate, 0));
+  } else {
+    setTimeout(calculate, 50);
+  }
+}
+
+function setRecommendationLoading(isLoading) {
+  ui.loadingOverlay.hidden = !isLoading;
+  ui.runButton.disabled = isLoading;
 }
 
 function commitSelectedProcess() {
@@ -648,6 +711,7 @@ function commitSelectedProcess() {
     "formulaText",
     "totalNutrientsMin",
     "nutrientDrop",
+    "nutrientReductionPriority",
     "chlorideGrade",
     "waterSolublePMin",
     "maxMaterialCount"
@@ -834,6 +898,9 @@ function collectSettings() {
   settings.waterSolublePMin = ui.waterSolublePMin.value;
   settings.finishedMoisture = ui.finishedMoisture.value;
   settings.processingFee = ui.processingFee.value;
+  settings.nutrientReductionPriority = normalizeNutrientPriority(
+    ui.nutrientPriorityInputs.map((input) => input.value)
+  );
 }
 
 function readFormulaTextFromInputs() {
@@ -862,6 +929,15 @@ function normalizeIntegerValue(value) {
   return Number.isFinite(number) ? String(Math.max(0, Math.trunc(number))) : "";
 }
 
+function normalizeNutrientPriority(value) {
+  const allowed = new Set(NUTRIENT_PRIORITY_OPTIONS.map((option) => option.value));
+  const source = Array.isArray(value) ? value : [];
+  return source
+    .map((item) => String(item || "").trim().toUpperCase())
+    .filter((item, index, list) => allowed.has(item) && list.indexOf(item) === index)
+    .slice(0, 3);
+}
+
 function setFormulaInputs(formulaText) {
   const parsed = parseFormula(formulaText);
   ui.formulaN.value = parsed ? Math.trunc(parsed.N) : "";
@@ -879,6 +955,7 @@ function currentSettings() {
     formulaText: "",
     totalNutrientsMin: "",
     nutrientDrop: 1,
+    nutrientReductionPriority: [],
     chlorideGrade: "medium",
     waterSolublePMin: "",
     maxMaterialCount: 4,
@@ -901,6 +978,7 @@ function currentSettings() {
     settings.totalNutrientsMin = parsed ? parsed.N + parsed.P + parsed.K : "";
   }
   settings.nutrientDrop ??= 1;
+  settings.nutrientReductionPriority = normalizeNutrientPriority(settings.nutrientReductionPriority);
   settings.chlorideGrade ||= process.name === "转鼓" ? "medium" : "low";
   settings.waterSolublePMin ??= "";
   settings.maxMaterialCount = Math.min(Math.max(Math.round(toNumber(settings.maxMaterialCount, 4)), 1), 6);
@@ -959,7 +1037,8 @@ function generateRecommendations(process, settings) {
   const finishedMoisture = toNumber(settings.finishedMoisture, process.finishedMoisture);
   const processingFee = toNumber(settings.processingFee, process.processingFee);
   const nutrientDrop = Math.min(Math.max(toNumber(settings.nutrientDrop, 1), 0), SINGLE_NUTRIENT_STANDARD_TOLERANCE);
-  const ranges = buildNutrientRanges(targets, nutrientDrop);
+  const nutrientPriority = normalizeNutrientPriority(settings.nutrientReductionPriority);
+  const ranges = buildNutrientRanges(targets, nutrientDrop, nutrientPriority);
   const totalNutrientsMin = toNumber(settings.totalNutrientsMin, targets.N + targets.P + targets.K);
   const waterSolubleTarget = supportsWaterSoluble(process) ? optionalNumber(settings.waterSolublePMin) : NaN;
   const materials = process.materials.filter((material) => (
@@ -975,10 +1054,15 @@ function generateRecommendations(process, settings) {
   const materialCounts = [];
   for (let count = 4; count <= maxMaterialCount; count += 1) materialCounts.push(count);
   const targetGrid = Number.isFinite(waterSolubleTarget)
-    ? nutrientTargetGridForWater(ranges)
-    : nutrientTargetGrid(ranges, totalNutrientsMin);
+    ? nutrientTargetGridForWater(ranges, nutrientPriority, targets)
+    : nutrientTargetGrid(ranges, totalNutrientsMin, nutrientPriority, targets);
+  const searchTargetGrid = nutrientPriority.length
+    ? targetGrid.slice(0, Number.isFinite(waterSolubleTarget) ? 8 : 24)
+    : targetGrid;
   const waterTargetLevels = [Number.isFinite(waterSolubleTarget) ? waterSolubleTarget : null];
-  const candidateLimit = Number.isFinite(waterSolubleTarget) ? 8 : 12;
+  const candidateLimit = nutrientPriority.length
+    ? (Number.isFinite(waterSolubleTarget) ? 8 : 48)
+    : (Number.isFinite(waterSolubleTarget) ? 8 : 12);
   for (const solveWaterTarget of waterTargetLevels) {
     const levelStart = candidates.length;
     for (const materialCount of materialCounts) {
@@ -989,7 +1073,7 @@ function generateRecommendations(process, settings) {
         if (!comboCanContribute(selected)) continue;
         if (Number.isFinite(solveWaterTarget) && !comboCanReachWaterTarget(selected, solveWaterTarget)) continue;
 
-        for (const gridTarget of targetGrid) {
+        for (const gridTarget of searchTargetGrid) {
           const solved = Number.isFinite(solveWaterTarget)
             ? solveForMaterialsWithWaterTarget(selected, gridTarget, finishedMoisture, solveWaterTarget)
             : solveForMaterials(selected, gridTarget, "folded", finishedMoisture);
@@ -1025,6 +1109,10 @@ function generateRecommendations(process, settings) {
   const deduped = dedupeCandidates(candidates);
   const waterSolublePMin = waterSolubleTarget;
   deduped.sort((a, b) => {
+    if (nutrientPriority.length) {
+      const priorityDiff = compareNutrientReduction(a, b, nutrientPriority);
+      if (priorityDiff !== 0) return priorityDiff;
+    }
     if (Number.isFinite(waterSolublePMin)) {
       const waterDiff = waterSolubleExcess(a, settings) - waterSolubleExcess(b, settings);
       if (Math.abs(waterDiff) > 0.0001) return waterDiff;
@@ -1054,15 +1142,31 @@ function parseFormula(value) {
   return { N: parts[0], P: parts[1], K: parts[2] };
 }
 
-function buildNutrientRanges(targets, nutrientDrop) {
-  return {
+function buildNutrientRanges(targets, nutrientDrop, nutrientPriority = []) {
+  const ranges = {
     N: { min: Math.max(0, targets.N - nutrientDrop), max: targets.N + SINGLE_NUTRIENT_STANDARD_TOLERANCE },
     P: { min: Math.max(0, targets.P - nutrientDrop), max: targets.P + SINGLE_NUTRIENT_STANDARD_TOLERANCE },
     K: { min: Math.max(0, targets.K - nutrientDrop), max: targets.K + SINGLE_NUTRIENT_STANDARD_TOLERANCE }
   };
+  if (nutrientPriority.length) {
+    const totalPriorityReduction = nutrientPriority.reduce(
+      (sum, name) => sum + Math.min(nutrientDrop, targets[name]),
+      0
+    );
+    Object.keys(ranges).forEach((name) => {
+      const priorityIndex = nutrientPriority.indexOf(name);
+      const precedingReduction = priorityIndex < 0
+        ? totalPriorityReduction
+        : nutrientPriority
+          .slice(0, priorityIndex)
+          .reduce((sum, nutrient) => sum + Math.min(nutrientDrop, targets[nutrient]), 0);
+      ranges[name].max = targets[name] + Math.max(SINGLE_NUTRIENT_STANDARD_TOLERANCE, precedingReduction);
+    });
+  }
+  return ranges;
 }
 
-function nutrientTargetGrid(ranges, totalMin) {
+function nutrientTargetGrid(ranges, totalMin, nutrientPriority = [], targets = {}) {
   const values = {};
   ["N", "P", "K"].forEach((name) => {
     values[name] = [];
@@ -1080,10 +1184,11 @@ function nutrientTargetGrid(ranges, totalMin) {
       }
     }
   }
+  sortNutrientTargetsByPriority(grid, nutrientPriority, targets);
   return grid;
 }
 
-function nutrientTargetGridForWater(ranges) {
+function nutrientTargetGridForWater(ranges, nutrientPriority = [], targets = {}) {
   const grid = [];
   for (let n = ranges.N.min; n <= ranges.N.max + 0.0001; n += 0.5) {
     for (let p = ranges.P.min; p <= ranges.P.max + 0.0001; p += 0.5) {
@@ -1094,7 +1199,34 @@ function nutrientTargetGridForWater(ranges) {
       });
     }
   }
+  sortNutrientTargetsByPriority(grid, nutrientPriority, targets);
   return grid;
+}
+
+function sortNutrientTargetsByPriority(grid, nutrientPriority, targets) {
+  if (!nutrientPriority.length) return;
+  const remaining = ["N", "P", "K"].filter((name) => !nutrientPriority.includes(name));
+  grid.sort((left, right) => {
+    for (const name of nutrientPriority) {
+      const difference = left[name] - right[name];
+      if (Math.abs(difference) > 0.0001) return difference;
+    }
+    for (const name of remaining) {
+      const difference = Math.abs(left[name] - targets[name]) - Math.abs(right[name] - targets[name]);
+      if (Math.abs(difference) > 0.0001) return difference;
+    }
+    const leftTotal = left.N + left.P + left.K;
+    const rightTotal = right.N + right.P + right.K;
+    return leftTotal - rightTotal;
+  });
+}
+
+function compareNutrientReduction(left, right, nutrientPriority) {
+  for (const name of nutrientPriority) {
+    const difference = left.metrics.folded[name] - right.metrics.folded[name];
+    if (Math.abs(difference) > 0.0001) return difference;
+  }
+  return 0;
 }
 
 function comboCanContribute(materials) {
