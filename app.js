@@ -1061,12 +1061,18 @@ function generateRecommendations(process, settings) {
     : targetGrid;
   const waterTargetLevels = [Number.isFinite(waterSolubleTarget) ? waterSolubleTarget : null];
   const candidateLimit = nutrientPriority.length
-    ? (Number.isFinite(waterSolubleTarget) ? 8 : 48)
+    ? (Number.isFinite(waterSolubleTarget) ? 24 : 48)
     : (Number.isFinite(waterSolubleTarget) ? 8 : 12);
+  const searchBudget = nutrientPriority.length
+    ? (Number.isFinite(waterSolubleTarget) ? 2400 : 8000)
+    : Number.POSITIVE_INFINITY;
+  let searchSteps = 0;
+  let stopSearch = false;
   for (const solveWaterTarget of waterTargetLevels) {
     const levelStart = candidates.length;
     for (const materialCount of materialCounts) {
       const combos = combinations(materials.length, materialCount);
+      if (nutrientPriority.length) combos.sort((left, right) => materialComboPrice(left, materials) - materialComboPrice(right, materials));
       for (const combo of combos) {
         const selected = combo.map((index) => materials[index]);
         if (!requiredIds.every((id) => selected.some((material) => material.id === id))) continue;
@@ -1074,6 +1080,11 @@ function generateRecommendations(process, settings) {
         if (Number.isFinite(solveWaterTarget) && !comboCanReachWaterTarget(selected, solveWaterTarget)) continue;
 
         for (const gridTarget of searchTargetGrid) {
+          if (searchSteps >= searchBudget) {
+            stopSearch = true;
+            break;
+          }
+          searchSteps += 1;
           const solved = Number.isFinite(solveWaterTarget)
             ? solveForMaterialsWithWaterTarget(selected, gridTarget, finishedMoisture, solveWaterTarget)
             : solveForMaterials(selected, gridTarget, "folded", finishedMoisture);
@@ -1093,41 +1104,46 @@ function generateRecommendations(process, settings) {
             if (!passesConstraints(candidate, settings.constraints)) continue;
             if (!passesStandardSettings(candidate, settings)) continue;
             if (!passesWaterSolubleTarget(candidate, waterSolubleTarget)) continue;
-            candidates.push(candidate);
-            if (candidates.length >= candidateLimit) break;
+            addCandidateToPool(candidates, candidate, candidateLimit, settings, nutrientPriority);
           }
-          if (candidates.length >= candidateLimit) break;
         }
-        if (candidates.length >= candidateLimit) break;
+        if (stopSearch) break;
       }
-      if (candidates.length >= candidateLimit) break;
-      if (candidates.length > levelStart && !Number.isFinite(solveWaterTarget)) break;
+      if (stopSearch) break;
+      if (candidates.length > levelStart && !Number.isFinite(solveWaterTarget) && !nutrientPriority.length) break;
     }
-    if (Number.isFinite(waterSolubleTarget) && candidates.length >= candidateLimit) break;
+    if (stopSearch) break;
   }
 
   const deduped = dedupeCandidates(candidates);
-  const waterSolublePMin = waterSolubleTarget;
-  deduped.sort((a, b) => {
-    if (nutrientPriority.length) {
-      const priorityDiff = compareNutrientReduction(a, b, nutrientPriority);
-      if (priorityDiff !== 0) return priorityDiff;
-    }
-    if (Number.isFinite(waterSolublePMin)) {
-      const waterDiff = waterSolubleExcess(a, settings) - waterSolubleExcess(b, settings);
-      if (Math.abs(waterDiff) > 0.0001) return waterDiff;
-    }
-    const costDiff = a.actualCost - b.actualCost;
-    if (Math.abs(costDiff) > 0.0001) return costDiff;
-    return waterSolubleExcess(a, settings) - waterSolubleExcess(b, settings);
-  });
-  const selected = selectDistinctCandidates(deduped, 3);
+  deduped.sort((left, right) => compareCandidates(left, right, settings, nutrientPriority));
+  const selected = deduped.slice(0, 3);
   return {
     candidates: selected,
     meta: Number.isFinite(waterSolubleTarget)
       ? `已按水溶磷 ${formatNumber(waterSolubleTarget, 0)}% 目标计算，得到 ${deduped.length} 个整数配比组合`
       : `已筛选 ${deduped.length} 个整数配比组合`
   };
+}
+
+function compareCandidates(left, right, settings, nutrientPriority) {
+  const costDiff = left.actualCost - right.actualCost;
+  if (Math.abs(costDiff) > 0.0001) return costDiff;
+
+  const waterDiff = waterSolubleExcess(left, settings) - waterSolubleExcess(right, settings);
+  if (Math.abs(waterDiff) > 0.0001) return waterDiff;
+
+  return compareNutrientReduction(left, right, nutrientPriority);
+}
+
+function addCandidateToPool(pool, candidate, limit, settings, nutrientPriority) {
+  pool.push(candidate);
+  pool.sort((left, right) => compareCandidates(left, right, settings, nutrientPriority));
+  if (pool.length > limit) pool.pop();
+}
+
+function materialComboPrice(combo, materials) {
+  return combo.reduce((sum, index) => sum + toNumber(materials[index].price, 0), 0);
 }
 
 function parseFormula(value) {
