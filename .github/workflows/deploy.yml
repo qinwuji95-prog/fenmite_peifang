@@ -14,15 +14,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: manyuanrong/setup-ossutil@v2.0
+      - name: Check required secrets
+        shell: bash
+        env:
+          AK_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          AK_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+          ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          BUCKET: ${{ secrets.OSS_BUCKET }}
+        run: |
+          test -n "$AK_ID" || { echo "ALIYUN_ACCESS_KEY_ID missing"; exit 1; }
+          test -n "$AK_SECRET" || { echo "ALIYUN_ACCESS_KEY_SECRET missing"; exit 1; }
+          test -n "$ENDPOINT" || { echo "OSS_ENDPOINT missing"; exit 1; }
+          test -n "$BUCKET" || { echo "OSS_BUCKET missing"; exit 1; }
+          echo "All required secrets are present"
+
+      - name: Setup ossutil
+        uses: pascal-lab/setup-ossutil@v1
         with:
           endpoint: ${{ secrets.OSS_ENDPOINT }}
           access-key-id: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
           access-key-secret: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
 
-      - name: Upload files
+      - name: Upload static files
         run: |
           ossutil cp -rf ./index.html oss://${{ secrets.OSS_BUCKET }}/
           ossutil cp -rf ./app.js oss://${{ secrets.OSS_BUCKET }}/
