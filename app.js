@@ -134,19 +134,19 @@ function buildInitialState() {
 
   const settings = {};
   MATERIAL_SEEDS.forEach((seed) => {
-    const formulaText = `${seed.target.n}-${seed.target.p}-${seed.target.k}`;
+    const formulaText = "0-0-0";
     settings[seed.name] = {
       formulaText,
-      totalNutrientsMin: seed.target.n + seed.target.p + seed.target.k,
+      totalNutrientsMin: 0,
       nutrientDrop: 1,
-      nutrientReductionPriority: [],
-      chlorideGrade: seed.name === "转鼓" ? "medium" : "low",
-      waterSolublePMin: "",
-      targetN: seed.target.n,
-      targetP: seed.target.p,
-      targetK: seed.target.k,
+      nutrientReductionPriority: ["P", "K", "N"],
+      chlorideGrade: "medium",
+      waterSolublePMin: "60",
+      targetN: 0,
+      targetP: 0,
+      targetK: 0,
       targetBasis: "folded",
-      maxMaterialCount: 4,
+      maxMaterialCount: 6,
       requiredMaterials: {
         磷源: [],
         氮源: [],
@@ -952,13 +952,13 @@ function currentProcess() {
 function currentSettings() {
   const process = currentProcess();
   state.settings[process.name] ||= {
-    formulaText: "",
-    totalNutrientsMin: "",
+    formulaText: "0-0-0",
+    totalNutrientsMin: 0,
     nutrientDrop: 1,
-    nutrientReductionPriority: [],
+    nutrientReductionPriority: ["P", "K", "N"],
     chlorideGrade: "medium",
-    waterSolublePMin: "",
-    maxMaterialCount: 4,
+    waterSolublePMin: "60",
+    maxMaterialCount: 6,
     requiredMaterials: {
       磷源: [],
       氮源: [],
