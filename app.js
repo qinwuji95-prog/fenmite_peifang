@@ -27,8 +27,8 @@ const NUTRIENT_PRIORITY_OPTIONS = [
 const SINGLE_NUTRIENT_STANDARD_TOLERANCE = 1.5;
 const CHLORIDE_GRADES = {
   sulfur: { label: "硫基", maxExclusive: 3 },
-  low: { label: "低氯", max: 15 },
-  medium: { label: "中氯", max: 30 },
+  low: { label: "低氯", minInclusive: 13, maxInclusive: 14.5 },
+  medium: { label: "中氯", minInclusive: 27, maxInclusive: 29 },
   high: { label: "高氯", min: 30 }
 };
 
@@ -1041,6 +1041,7 @@ function generateRecommendations(process, settings) {
   const ranges = buildNutrientRanges(targets, nutrientDrop, nutrientPriority);
   const totalNutrientsMin = toNumber(settings.totalNutrientsMin, targets.N + targets.P + targets.K);
   const waterSolubleTarget = supportsWaterSoluble(process) ? optionalNumber(settings.waterSolublePMin) : NaN;
+  const chlorideGrade = CHLORIDE_GRADES[settings.chlorideGrade] || CHLORIDE_GRADES.medium;
   const materials = process.materials.filter((material) => (
     material.enabled &&
     material.maxKg > 0 &&
@@ -1052,65 +1053,76 @@ function generateRecommendations(process, settings) {
 
   const candidates = [];
   const materialCounts = [];
-  for (let count = 4; count <= maxMaterialCount; count += 1) materialCounts.push(count);
+  for (let count = Number.isFinite(waterSolubleTarget) ? maxMaterialCount : 4;
+    Number.isFinite(waterSolubleTarget) ? count >= 4 : count <= maxMaterialCount;
+    count += Number.isFinite(waterSolubleTarget) ? -1 : 1) materialCounts.push(count);
   const targetGrid = Number.isFinite(waterSolubleTarget)
-    ? nutrientTargetGridForWater(ranges, nutrientPriority, targets)
+    ? nutrientTargetGridForWater(ranges, totalNutrientsMin, nutrientPriority, targets)
     : nutrientTargetGrid(ranges, totalNutrientsMin, nutrientPriority, targets);
   const searchTargetGrid = nutrientPriority.length
-    ? targetGrid.slice(0, Number.isFinite(waterSolubleTarget) ? 8 : 24)
+    ? (Number.isFinite(waterSolubleTarget)
+      ? closestSearchTargets(targetGrid, 1, targets)
+      : limitSearchTargetGrid(targetGrid, 24, targets))
     : targetGrid;
   const waterTargetLevels = [Number.isFinite(waterSolubleTarget) ? waterSolubleTarget : null];
+  const chlorideTargetLevels = chlorideSolveTargets(chlorideGrade);
   const candidateLimit = nutrientPriority.length
     ? (Number.isFinite(waterSolubleTarget) ? 24 : 48)
     : (Number.isFinite(waterSolubleTarget) ? 8 : 12);
   const searchBudget = nutrientPriority.length
     ? (Number.isFinite(waterSolubleTarget) ? 2400 : 8000)
-    : Number.POSITIVE_INFINITY;
+    : (Number.isFinite(waterSolubleTarget) ? 5000 : 12000);
   let searchSteps = 0;
   let stopSearch = false;
   for (const solveWaterTarget of waterTargetLevels) {
     const levelStart = candidates.length;
     for (const materialCount of materialCounts) {
-      const combos = combinations(materials.length, materialCount);
-      if (nutrientPriority.length) combos.sort((left, right) => materialComboPrice(left, materials) - materialComboPrice(right, materials));
+      const combos = combinations(materials.length, materialCount).filter((combo) => {
+        const selected = combo.map((index) => materials[index]);
+        return requiredIds.every((id) => selected.some((material) => material.id === id)) &&
+          comboCanContribute(selected) &&
+          (!Number.isFinite(solveWaterTarget) || comboCanReachWaterTarget(selected, solveWaterTarget)) &&
+          comboCanReachChlorideRange(selected, chlorideGrade, finishedMoisture);
+      });
+      combos.sort((left, right) => materialComboPrice(left, materials) - materialComboPrice(right, materials));
       for (const combo of combos) {
         const selected = combo.map((index) => materials[index]);
-        if (!requiredIds.every((id) => selected.some((material) => material.id === id))) continue;
-        if (!comboCanContribute(selected)) continue;
-        if (Number.isFinite(solveWaterTarget) && !comboCanReachWaterTarget(selected, solveWaterTarget)) continue;
 
-        for (const gridTarget of searchTargetGrid) {
-          if (searchSteps >= searchBudget) {
-            stopSearch = true;
-            break;
+        for (const solveChlorideTarget of chlorideTargetLevels) {
+          for (const gridTarget of searchTargetGrid) {
+            if (searchSteps >= searchBudget) {
+              stopSearch = true;
+              break;
+            }
+            searchSteps += 1;
+            const solved = Number.isFinite(solveWaterTarget)
+              ? solveForMaterialsWithWaterTarget(selected, gridTarget, finishedMoisture, solveWaterTarget, solveChlorideTarget)
+              : solveForMaterials(selected, gridTarget, "folded", finishedMoisture, solveChlorideTarget);
+            const solvedOptions = Array.isArray(solved?.[0]) ? solved : [solved];
+
+            for (const solvedOption of solvedOptions) {
+              if (!solvedOption) continue;
+              const quantities = roundedQuantityMap(selected, solvedOption);
+              if (!quantities) continue;
+
+              const candidate = calculateFormula(process, quantities, finishedMoisture, processingFee);
+              if (!candidate) continue;
+              const usedItems = candidate.items.filter((item) => item.kg > 0.05);
+              if (usedItems.length > maxMaterialCount) continue;
+              if (!requiredIds.every((id) => usedItems.some((item) => item.id === id))) continue;
+              if (!targetsMatch(candidate, ranges, totalNutrientsMin, "folded")) continue;
+              if (!passesConstraints(candidate, settings.constraints)) continue;
+              if (!passesStandardSettings(candidate, settings)) continue;
+              if (!passesWaterSolubleTarget(candidate, waterSolubleTarget)) continue;
+              addCandidateToPool(candidates, candidate, candidateLimit, settings, nutrientPriority);
+            }
           }
-          searchSteps += 1;
-          const solved = Number.isFinite(solveWaterTarget)
-            ? solveForMaterialsWithWaterTarget(selected, gridTarget, finishedMoisture, solveWaterTarget)
-            : solveForMaterials(selected, gridTarget, "folded", finishedMoisture);
-          const solvedOptions = Array.isArray(solved?.[0]) ? solved : [solved];
-
-          for (const solvedOption of solvedOptions) {
-            if (!solvedOption) continue;
-            const quantities = roundedQuantityMap(selected, solvedOption);
-            if (!quantities) continue;
-
-            const candidate = calculateFormula(process, quantities, finishedMoisture, processingFee);
-            if (!candidate) continue;
-            const usedItems = candidate.items.filter((item) => item.kg > 0.05);
-            if (usedItems.length > maxMaterialCount) continue;
-            if (!requiredIds.every((id) => usedItems.some((item) => item.id === id))) continue;
-            if (!targetsMatch(candidate, ranges, totalNutrientsMin, "folded")) continue;
-            if (!passesConstraints(candidate, settings.constraints)) continue;
-            if (!passesStandardSettings(candidate, settings)) continue;
-            if (!passesWaterSolubleTarget(candidate, waterSolubleTarget)) continue;
-            addCandidateToPool(candidates, candidate, candidateLimit, settings, nutrientPriority);
-          }
+          if (stopSearch) break;
         }
         if (stopSearch) break;
       }
       if (stopSearch) break;
-      if (candidates.length > levelStart && !Number.isFinite(solveWaterTarget) && !nutrientPriority.length) break;
+      if (candidates.length > levelStart && !Number.isFinite(solveWaterTarget) && !nutrientPriority.length && !Number.isFinite(chlorideTargetLevels[0])) break;
     }
     if (stopSearch) break;
   }
@@ -1204,14 +1216,16 @@ function nutrientTargetGrid(ranges, totalMin, nutrientPriority = [], targets = {
   return grid;
 }
 
-function nutrientTargetGridForWater(ranges, nutrientPriority = [], targets = {}) {
+function nutrientTargetGridForWater(ranges, totalMin, nutrientPriority = [], targets = {}) {
   const grid = [];
   for (let n = ranges.N.min; n <= ranges.N.max + 0.0001; n += 0.5) {
     for (let p = ranges.P.min; p <= ranges.P.max + 0.0001; p += 0.5) {
+      const minimumK = Math.max(ranges.K.min, totalMin - n - p);
+      if (minimumK > ranges.K.max + 0.0001) continue;
       grid.push({
         N: Number(n.toFixed(2)),
         P: Number(p.toFixed(2)),
-        K: Number(ranges.K.min.toFixed(2))
+        K: Number(minimumK.toFixed(2))
       });
     }
   }
@@ -1237,6 +1251,33 @@ function sortNutrientTargetsByPriority(grid, nutrientPriority, targets) {
   });
 }
 
+function limitSearchTargetGrid(grid, limit, targets) {
+  if (grid.length <= limit) return grid;
+  const preferred = grid.slice(0, Math.max(0, limit - 2));
+  const closest = [...grid]
+    .sort((left, right) => (
+      Math.abs(left.N - targets.N) + Math.abs(left.P - targets.P) + Math.abs(left.K - targets.K) -
+      (Math.abs(right.N - targets.N) + Math.abs(right.P - targets.P) + Math.abs(right.K - targets.K))
+    ))
+    .slice(0, 2);
+  const seen = new Set();
+  return [...closest, ...preferred].filter((target) => {
+    const key = `${target.N}:${target.P}:${target.K}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, limit);
+}
+
+function closestSearchTargets(grid, limit, targets) {
+  return [...grid]
+    .sort((left, right) => (
+      Math.abs(left.N - targets.N) + Math.abs(left.P - targets.P) + Math.abs(left.K - targets.K) -
+      (Math.abs(right.N - targets.N) + Math.abs(right.P - targets.P) + Math.abs(right.K - targets.K))
+    ))
+    .slice(0, limit);
+}
+
 function compareNutrientReduction(left, right, nutrientPriority) {
   for (const name of nutrientPriority) {
     const difference = left.metrics.folded[name] - right.metrics.folded[name];
@@ -1255,6 +1296,36 @@ function comboCanReachWaterTarget(materials, target) {
   const hasLower = phosphorusMaterials.some((material) => prop(material, "水溶磷") <= target);
   const hasHigher = phosphorusMaterials.some((material) => prop(material, "水溶磷") >= target);
   return hasLower && hasHigher;
+}
+
+function comboCanReachChlorideRange(materials, grade, finishedMoisture) {
+  if (Number.isFinite(grade.maxExclusive) || Number.isFinite(grade.min)) {
+    const values = materials
+      .map((material) => prop(material, "氯离子") / yieldCoefficient(material, finishedMoisture))
+      .filter((value) => Number.isFinite(value));
+    if (!values.length) return false;
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    if (Number.isFinite(grade.maxExclusive)) return min < grade.maxExclusive - 0.0001;
+    if (Number.isFinite(grade.min)) return max > grade.min + 0.0001;
+  }
+  if (Number.isFinite(grade.minInclusive) || Number.isFinite(grade.maxInclusive)) {
+    const values = materials
+      .map((material) => prop(material, "氯离子") / yieldCoefficient(material, finishedMoisture))
+      .filter((value) => Number.isFinite(value));
+    if (!values.length) return false;
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const lower = Number.isFinite(grade.minInclusive) ? grade.minInclusive : Number.NEGATIVE_INFINITY;
+    const upper = Number.isFinite(grade.maxInclusive) ? grade.maxInclusive : Number.POSITIVE_INFINITY;
+    return max + 0.0001 >= lower && min - 0.0001 <= upper;
+  }
+  return true;
+}
+
+function chlorideSolveTargets(grade) {
+  if (!Number.isFinite(grade.minInclusive) || !Number.isFinite(grade.maxInclusive)) return [null];
+  return [(grade.minInclusive + grade.maxInclusive) / 2];
 }
 
 function roundedQuantityMap(materials, solved) {
@@ -1295,9 +1366,9 @@ function roundedQuantityMap(materials, solved) {
   return quantities;
 }
 
-function solveForMaterials(materials, targets, basis, finishedMoisture) {
-  if (materials.length > 4) {
-    return solveBoundedMaterialSystem(materials, targets, finishedMoisture, null, basis);
+function solveForMaterials(materials, targets, basis, finishedMoisture, chlorideTarget = null) {
+  if (materials.length > 4 || Number.isFinite(chlorideTarget)) {
+    return solveBoundedMaterialSystem(materials, targets, finishedMoisture, null, basis, chlorideTarget);
   }
 
   const matrix = [[], [], [], []];
@@ -1323,9 +1394,9 @@ function solveForMaterials(materials, targets, basis, finishedMoisture) {
   return solveLinearSystem(matrix, vector);
 }
 
-function solveForMaterialsWithWaterTarget(materials, targets, finishedMoisture, waterSolubleTarget) {
-  if (materials.length > 4) {
-    return solveBoundedMaterialSystem(materials, targets, finishedMoisture, waterSolubleTarget, "folded");
+function solveForMaterialsWithWaterTarget(materials, targets, finishedMoisture, waterSolubleTarget, chlorideTarget = null) {
+  if (materials.length > 4 || Number.isFinite(chlorideTarget)) {
+    return solveBoundedMaterialSystem(materials, targets, finishedMoisture, waterSolubleTarget, "folded", chlorideTarget);
   }
   const phosphorusMaterials = materials.filter((material) => prop(material, "P") > 0);
   if (phosphorusMaterials.length && phosphorusMaterials.every((material) => Math.abs(prop(material, "水溶磷") - waterSolubleTarget) < 0.0001)) {
@@ -1345,14 +1416,17 @@ function solveForMaterialsWithWaterTarget(materials, targets, finishedMoisture, 
   return solved && solved.every((value) => Number.isFinite(value)) ? solved : null;
 }
 
-function solveBoundedMaterialSystem(materials, targets, finishedMoisture, equationWaterTarget, basis) {
-  const omittedNutrients = Number.isFinite(equationWaterTarget) ? ["K", "P", "N"] : [null];
+function solveBoundedMaterialSystem(materials, targets, finishedMoisture, equationWaterTarget, basis, equationChlorideTarget = null) {
+  const specialEquationCount = Number.isFinite(equationWaterTarget) + Number.isFinite(equationChlorideTarget);
+  const nutrientCount = Math.max(1, 3 - specialEquationCount);
+  const nutrientChoices = combinations(3, nutrientCount)
+    .map((choice) => choice.map((index) => ["N", "P", "K"][index]));
   const basisChoices = combinations(materials.length, 4);
   const solutions = [];
   const seenSolutions = new Set();
 
-  for (const omittedNutrient of omittedNutrients) {
-    const equations = materialEquations(materials, targets, finishedMoisture, equationWaterTarget, basis, omittedNutrient);
+  for (const nutrientNames of nutrientChoices) {
+    const equations = materialEquations(materials, targets, finishedMoisture, equationWaterTarget, basis, nutrientNames, equationChlorideTarget);
     for (const basisChoice of basisChoices) {
       const extraIndexes = materials.map((_, index) => index).filter((index) => !basisChoice.includes(index));
       const boundOptions = extraIndexes.map((index) => {
@@ -1402,8 +1476,8 @@ function solveBoundedMaterialSystem(materials, targets, finishedMoisture, equati
           seenSolutions.add(key);
           solutions.push(result);
           solutions.sort((left, right) => (
-            materialSolutionScore(materials, left, targets, finishedMoisture, equationWaterTarget) -
-            materialSolutionScore(materials, right, targets, finishedMoisture, equationWaterTarget)
+            materialSolutionScore(materials, left, targets, finishedMoisture, equationWaterTarget, equationChlorideTarget) -
+            materialSolutionScore(materials, right, targets, finishedMoisture, equationWaterTarget, equationChlorideTarget)
           ));
           if (solutions.length > 32) solutions.pop();
           return null;
@@ -1420,7 +1494,7 @@ function solveBoundedMaterialSystem(materials, targets, finishedMoisture, equati
   return solutions.length ? solutions : null;
 }
 
-function materialSolutionScore(materials, quantities, targets, finishedMoisture, waterSolubleTarget) {
+function materialSolutionScore(materials, quantities, targets, finishedMoisture, waterSolubleTarget, chlorideTarget) {
   let yieldKg = 0;
   const totals = { N: 0, P: 0, K: 0 };
   let chloride = 0;
@@ -1448,17 +1522,16 @@ function materialSolutionScore(materials, quantities, targets, finishedMoisture,
   };
   let score = ["N", "P", "K"].reduce((sum, name) => sum + Math.abs(metrics[name] - targets[name]), 0);
   score += Math.abs(metrics.total - (targets.N + targets.P + targets.K)) * 0.5;
-  score += Math.max(0, metrics.chloride - 15) * 0.05;
+  if (Number.isFinite(chlorideTarget)) score += Math.abs(metrics.chloride - chlorideTarget) * 0.2;
   if (Number.isFinite(waterSolubleTarget)) score += Math.abs(metrics.water - waterSolubleTarget) * 0.2;
   return score;
 }
 
-function materialEquations(materials, targets, finishedMoisture, waterSolubleTarget, basis, omittedNutrient) {
+function materialEquations(materials, targets, finishedMoisture, waterSolubleTarget, basis, nutrientNames, chlorideTarget) {
   const equations = [{
     coefficients: materials.map(() => 1),
     rhs: 1000
   }];
-  const nutrientNames = (Number.isFinite(waterSolubleTarget) ? ["N", "P", "K"].filter((name) => name !== omittedNutrient) : ["N", "P", "K"]);
   nutrientNames.forEach((name) => {
     equations.push({
       coefficients: materials.map((material) => {
@@ -1475,13 +1548,13 @@ function materialEquations(materials, targets, finishedMoisture, waterSolubleTar
       )),
       rhs: 0
     });
-  } else if (omittedNutrient !== null) {
+  }
+  if (Number.isFinite(chlorideTarget)) {
     equations.push({
-      coefficients: materials.map((material) => {
-        const y = yieldCoefficient(material, finishedMoisture);
-        return basis === "folded" ? prop(material, omittedNutrient) - targets[omittedNutrient] * y : prop(material, omittedNutrient);
-      }),
-      rhs: basis === "folded" ? 0 : targets[omittedNutrient] * 1000
+      coefficients: materials.map((material) => (
+        prop(material, "氯离子") - chlorideTarget * yieldCoefficient(material, finishedMoisture)
+      )),
+      rhs: 0
     });
   }
   return equations;
@@ -1578,8 +1651,9 @@ function passesStandardSettings(candidate, settings) {
   const grade = CHLORIDE_GRADES[settings.chlorideGrade] || CHLORIDE_GRADES.medium;
   const chloride = metrics["氯离子"];
   if (Number.isFinite(grade.min) && chloride <= grade.min + 0.0001) return false;
+  if (Number.isFinite(grade.minInclusive) && chloride + 0.0001 < grade.minInclusive) return false;
   if (Number.isFinite(grade.maxExclusive) && chloride >= grade.maxExclusive) return false;
-  if (Number.isFinite(grade.max) && chloride > grade.max + 0.0001) return false;
+  if (Number.isFinite(grade.maxInclusive) && chloride - 0.0001 > grade.maxInclusive) return false;
 
   return true;
 }
