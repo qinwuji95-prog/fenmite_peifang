@@ -1589,7 +1589,7 @@ function calculateFormula(process, quantities, finishedMoisture, processingFee) 
 
   const metrics = { folded: {}, unfolded: {} };
   INDICATORS.forEach((name) => {
-    const special = specialMetric(name, items, yieldKg);
+    const special = specialMetric(name, items, yieldKg, process, finishedMoisture, theoreticalKg);
     if (special !== null) {
       metrics.folded[name] = special.folded;
       metrics.unfolded[name] = special.unfolded;
@@ -1613,7 +1613,14 @@ function calculateFormula(process, quantities, finishedMoisture, processingFee) 
   };
 }
 
-function specialMetric(name, items, yieldKg) {
+function specialMetric(name, items, yieldKg, process, finishedMoisture, theoreticalKg) {
+  if (name === "含水量" && process.name === "转鼓") {
+    const total = items.reduce((sum, item) => sum + item.kg * prop(item.material, name), 0);
+    return {
+      folded: Math.min(total / yieldKg, finishedMoisture),
+      unfolded: total / theoreticalKg
+    };
+  }
   if (name !== "水溶磷") return null;
   const phosphorusBase = items.reduce((sum, item) => sum + item.kg * prop(item.material, "P"), 0);
   if (phosphorusBase <= 0) return { folded: 0, unfolded: 0 };
