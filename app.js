@@ -1038,10 +1038,6 @@ function generateRecommendations(process, settings) {
   if (requiredIds.length > maxMaterialCount) {
     return { candidates: [], error: "必选原料数量超过原料数量上限，请重新配置" };
   }
-  if (maxMaterialCount < 4) {
-    return { candidates: [], error: "当前求解至少需要 4 种原料，请将原料数量上限设为 4-6。" };
-  }
-
   const finishedMoisture = toNumber(settings.finishedMoisture, process.finishedMoisture);
   const processingFee = toNumber(settings.processingFee, process.processingFee);
   const nutrientDrop = Math.min(Math.max(toNumber(settings.nutrientDrop, 1), 0), SINGLE_NUTRIENT_STANDARD_TOLERANCE);
@@ -1055,8 +1051,23 @@ function generateRecommendations(process, settings) {
     material.maxKg > 0 &&
     (!Number.isFinite(waterSolubleTarget) || prop(material, "N") > 0 || prop(material, "P") > 0 || prop(material, "K") > 0)
   ));
-  if (materials.length < 4) {
-    return { candidates: [], error: "至少需要启用 4 个原料。" };
+  if (!materials.length) {
+    return { candidates: [], error: "至少需要启用 1 个原料。" };
+  }
+  if (maxMaterialCount < 4 || materials.length < 4) {
+    return generateLowMaterialRecommendations(process, settings, {
+      materials,
+      maxMaterialCount,
+      targets,
+      ranges,
+      totalNutrientsMin,
+      waterSolubleTarget,
+      chlorideGrade,
+      finishedMoisture,
+      processingFee,
+      requiredIds,
+      nutrientPriority
+    });
   }
 
   const candidates = [];
@@ -1088,7 +1099,7 @@ function generateRecommendations(process, settings) {
       const combos = combinations(materials.length, materialCount).filter((combo) => {
         const selected = combo.map((index) => materials[index]);
         return requiredIds.every((id) => selected.some((material) => material.id === id)) &&
-          comboCanContribute(selected) &&
+          comboCanContribute(selected, targets) &&
           (!Number.isFinite(solveWaterTarget) || comboCanReachWaterTarget(selected, solveWaterTarget)) &&
           comboCanReachChlorideRange(selected, chlorideGrade, finishedMoisture);
       });
@@ -1144,6 +1155,114 @@ function generateRecommendations(process, settings) {
       ? `已按水溶磷 ${formatNumber(waterSolubleTarget, 0)}% 目标计算，得到 ${deduped.length} 个整数配比组合`
       : `已筛选 ${deduped.length} 个整数配比组合`
   };
+}
+
+function generateLowMaterialRecommendations(process, settings, options) {
+  const {
+    materials,
+    maxMaterialCount,
+    targets,
+    ranges,
+    totalNutrientsMin,
+    waterSolubleTarget,
+    chlorideGrade,
+    finishedMoisture,
+    processingFee,
+    requiredIds,
+    nutrientPriority
+  } = options;
+  const candidateLimit = nutrientPriority.length
+    ? (Number.isFinite(waterSolubleTarget) ? 24 : 48)
+    : (Number.isFinite(waterSolubleTarget) ? 8 : 12);
+  const searchBudget = nutrientPriority.length
+    ? (Number.isFinite(waterSolubleTarget) ? 150000 : 250000)
+    : (Number.isFinite(waterSolubleTarget) ? 200000 : 300000);
+  const chlorideTargetLevels = chlorideSolveTargets(chlorideGrade);
+  const candidates = [];
+  let searchSteps = 0;
+  let stopSearch = false;
+
+  for (let count = 1; count <= maxMaterialCount && !stopSearch; count += 1) {
+    const combos = combinations(materials.length, count)
+      .filter((combo) => {
+        const selected = combo.map((index) => materials[index]);
+        return requiredIds.every((id) => selected.some((material) => material.id === id)) &&
+          comboCanContribute(selected, targets) &&
+          (!Number.isFinite(waterSolubleTarget) || comboCanMeetWaterSolubleTarget(selected, waterSolubleTarget)) &&
+          comboCanReachChlorideRange(selected, chlorideGrade, finishedMoisture);
+      })
+      .sort((left, right) => materialComboPrice(left, materials) - materialComboPrice(right, materials));
+
+    for (const combo of combos) {
+      const selected = combo.map((index) => materials[index]);
+      const quantityMaps = enumerateLowMaterialQuantityMaps(selected);
+      for (const quantities of quantityMaps) {
+        if (searchSteps >= searchBudget) {
+          stopSearch = true;
+          break;
+        }
+        searchSteps += 1;
+        const candidate = calculateFormula(process, quantities, finishedMoisture, processingFee);
+        if (!candidate) continue;
+        const usedItems = candidate.items.filter((item) => item.kg > 0.05);
+        if (usedItems.length > maxMaterialCount) continue;
+        if (!requiredIds.every((id) => usedItems.some((item) => item.id === id))) continue;
+        if (!targetsMatch(candidate, ranges, totalNutrientsMin, "folded")) continue;
+        if (!passesConstraints(candidate, settings.constraints)) continue;
+        if (!passesStandardSettings(candidate, settings)) continue;
+        if (!passesWaterSolubleTarget(candidate, waterSolubleTarget)) continue;
+        addCandidateToPool(candidates, candidate, candidateLimit, settings, nutrientPriority);
+      }
+      if (stopSearch) break;
+    }
+  }
+
+  const deduped = dedupeCandidates(candidates);
+  deduped.sort((left, right) => compareCandidates(left, right, settings, nutrientPriority));
+  return {
+    candidates: deduped.slice(0, 3),
+    meta: Number.isFinite(waterSolubleTarget)
+      ? `已按水溶磷 ${formatNumber(waterSolubleTarget, 0)}% 目标计算，得到 ${deduped.length} 个整数配比组合`
+      : `已筛选 ${deduped.length} 个整数配比组合`
+  };
+}
+
+function* enumerateLowMaterialQuantityMaps(materials) {
+  const maxPercents = materials.map((material) => Math.floor(toNumber(material.maxKg, 0) / 10));
+  if (maxPercents.some((maxPercent) => maxPercent < 1)) return;
+  const searchOrder = materials
+    .map((material, index) => ({ index, price: toNumber(material.price, 0) }))
+    .sort((left, right) => right.price - left.price)
+    .map((item) => item.index);
+  const percents = Array(materials.length).fill(0);
+
+  function* visit(index, remaining) {
+    const materialIndex = searchOrder[index];
+    if (index === materials.length - 1) {
+      if (remaining < 1 || remaining > maxPercents[materialIndex]) return;
+      percents[materialIndex] = remaining;
+      const quantities = new Map();
+      materials.forEach((material, materialIndex) => {
+        quantities.set(material.id, percents[materialIndex] * 10);
+      });
+      yield quantities;
+      return;
+    }
+
+    const remainingMaterials = materials.length - index - 1;
+    const minimumRemaining = remainingMaterials;
+    const maximumRemaining = searchOrder
+      .slice(index + 1)
+      .reduce((sum, materialIndex) => sum + maxPercents[materialIndex], 0);
+    const minimum = Math.max(1, remaining - maximumRemaining);
+    const maximum = Math.min(maxPercents[materialIndex], remaining - minimumRemaining);
+    for (let percent = minimum; percent <= maximum; percent += 1) {
+      percents[materialIndex] = percent;
+      yield* visit(index + 1, remaining - percent);
+    }
+  }
+
+  yield* visit(0, 100);
 }
 
 function compareCandidates(left, right, settings, nutrientPriority) {
@@ -1294,8 +1413,10 @@ function compareNutrientReduction(left, right, nutrientPriority) {
   return 0;
 }
 
-function comboCanContribute(materials) {
-  return ["N", "P", "K"].every((name) => materials.some((material) => prop(material, name) > 0));
+function comboCanContribute(materials, targets = null) {
+  return ["N", "P", "K"]
+    .filter((name) => !targets || targets[name] > 0)
+    .every((name) => materials.some((material) => prop(material, name) > 0));
 }
 
 function comboCanReachWaterTarget(materials, target) {
@@ -1304,6 +1425,11 @@ function comboCanReachWaterTarget(materials, target) {
   const hasLower = phosphorusMaterials.some((material) => prop(material, "水溶磷") <= target);
   const hasHigher = phosphorusMaterials.some((material) => prop(material, "水溶磷") >= target);
   return hasLower && hasHigher;
+}
+
+function comboCanMeetWaterSolubleTarget(materials, target) {
+  const phosphorusMaterials = materials.filter((material) => prop(material, "P") > 0);
+  return phosphorusMaterials.length > 0 && phosphorusMaterials.some((material) => prop(material, "水溶磷") + 0.0001 >= target);
 }
 
 function comboCanReachChlorideRange(materials, grade, finishedMoisture) {
