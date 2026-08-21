@@ -875,9 +875,6 @@ function renderCandidate(candidate, index, settings) {
         <div class="primary-metric"><span>总养分</span><strong>${formatNumber(candidate.metrics.folded["总养分"], 2)}%</strong></div>
         ${controlMetrics}
       </div>
-      <div class="result-card-actions">
-        <button type="button" class="primary" data-action="save-recipe" data-candidate-index="${index}">保存配方</button>
-      </div>
       <details class="result-details">
         <summary>
           <span class="details-toggle-label">
@@ -905,6 +902,9 @@ function renderCandidate(candidate, index, settings) {
                 <tbody>${metricRows}</tbody>
               </table>
             </div>
+          </div>
+          <div class="result-card-actions">
+            <button type="button" class="primary" data-action="save-recipe" data-candidate-index="${index}">保存配方</button>
           </div>
         </div>
       </details>
