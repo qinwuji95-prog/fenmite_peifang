@@ -570,7 +570,8 @@ function renderRequiredMaterialOptions() {
         <span>${escapeHtml(material.name)}</span>
       </label>
     `).join("") : `<span class="muted">暂无${escapeHtml(category)}原料</span>`;
-    summary.textContent = selected.size ? `${selected.size} 项已选` : "未选择";
+    const visibleSelectedCount = materials.filter((material) => selected.has(material.id)).length;
+    summary.textContent = visibleSelectedCount ? `${visibleSelectedCount} 项已选` : "未选择";
   });
 }
 
@@ -980,9 +981,30 @@ function currentSettings() {
   ["磷源", "氮源", "钾源"].forEach((category) => {
     if (!Array.isArray(settings.requiredMaterials[category])) settings.requiredMaterials[category] = [];
   });
+  if (normalizeRequiredMaterials(settings) && typeof localStorage !== "undefined") saveState();
   settings.targetBasis = "folded";
   state.settings[process.name].constraints ||= defaultConstraints(process.name);
   return state.settings[process.name];
+}
+
+function normalizeRequiredMaterials(settings) {
+  const process = currentProcess();
+  let changed = false;
+  ["磷源", "氮源", "钾源"].forEach((category) => {
+    const validIds = new Set(
+      process.materials
+        .filter((material) => material.category === category)
+        .map((material) => material.id)
+    );
+    const normalized = Array.from(new Set(settings.requiredMaterials[category]))
+      .filter((id) => validIds.has(id));
+    if (normalized.length !== settings.requiredMaterials[category].length ||
+        normalized.some((id, index) => id !== settings.requiredMaterials[category][index])) {
+      settings.requiredMaterials[category] = normalized;
+      changed = true;
+    }
+  });
+  return changed;
 }
 
 function requiredMaterialIds(settings) {
