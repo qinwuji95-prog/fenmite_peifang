@@ -149,7 +149,8 @@ function buildInitialState() {
     activeTab: "recommendations",
     activeMaterialCategory: "",
     processes,
-    settings
+    settings,
+    recipes: []
   };
 }
 
@@ -176,6 +177,7 @@ function loadState() {
     if (!raw) return buildInitialState();
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed.processes) || !parsed.settings) return buildInitialState();
+    parsed.recipes ||= [];
     return parsed;
   } catch (error) {
     return buildInitialState();
@@ -187,8 +189,10 @@ function saveState() {
 }
 
 let state = typeof localStorage === "undefined" ? buildInitialState() : loadState();
+state.recipes ||= [];
 let latestCandidates = [];
 let toastTimer = null;
+let activeRecipeDraft = null;
 
 const ui = {};
 
@@ -235,6 +239,37 @@ function init() {
     "requiredPotassiumSummary",
     "recommendationsView",
     "materialsView",
+    "recipesView",
+    "newRecipeButton",
+    "recipesList",
+    "recipeSaveDialog",
+    "recipeSaveCandidateIndex",
+    "recipeSaveName",
+    "recipeSaveNote",
+    "recipeSaveSummary",
+    "recipeEditButton",
+    "recipeConfirmSaveButton",
+    "recipeDialog",
+    "recipeDialogTitle",
+    "recipeDialogHint",
+    "recipeEditId",
+    "recipeSource",
+    "recipeName",
+    "recipeProcess",
+    "recipeFormula",
+    "recipeNote",
+    "addRecipeMaterialButton",
+    "recipeMaterialsEditor",
+    "recipeEditorPreview",
+    "saveRecipeButton",
+    "recipeDetailDialog",
+    "recipeDetailTitle",
+    "recipeDetailMeta",
+    "recipeDetailContent",
+    "recipeDetailId",
+    "recipeDetailReuseButton",
+    "recipeDetailEditButton",
+    "recipeDetailDeleteButton",
     "addMaterialButton",
     "exportButton",
     "importButton",
@@ -284,12 +319,62 @@ function bindEvents() {
   });
 
   ui.results.addEventListener("click", (event) => {
+    const saveButton = event.target.closest("button[data-action=\"save-recipe\"]");
+    if (saveButton) {
+      openRecipeSaveDialog(Number(saveButton.dataset.candidateIndex));
+      return;
+    }
     const button = event.target.closest("button[data-material-id]");
     if (!button) return;
     openResultMaterialInfo(Number(button.dataset.candidateIndex), button.dataset.materialId);
   });
 
   ui.saveResultMaterialButton.addEventListener("click", saveResultMaterialInfo);
+
+  ui.newRecipeButton.addEventListener("click", () => openRecipeEditor());
+  ui.recipesList.addEventListener("click", handleRecipeListAction);
+  ui.recipeConfirmSaveButton.addEventListener("click", confirmRecommendedRecipeSave);
+  ui.recipeEditButton.addEventListener("click", () => {
+    const index = Number(ui.recipeSaveCandidateIndex.value);
+    const candidate = latestCandidates[index];
+    if (!candidate) return;
+    const name = ui.recipeSaveName.value.trim();
+    const note = ui.recipeSaveNote.value.trim();
+    ui.recipeSaveDialog.close();
+    openRecipeEditor(recipeDraftFromCandidate(candidate, name, note));
+  });
+  ui.addRecipeMaterialButton.addEventListener("click", () => {
+    if (!activeRecipeDraft) return;
+    activeRecipeDraft.items.push({ id: "", kg: 0 });
+    renderRecipeMaterialsEditor();
+  });
+  ui.recipeMaterialsEditor.addEventListener("input", handleRecipeEditorInput);
+  ui.recipeMaterialsEditor.addEventListener("change", handleRecipeEditorInput);
+  ui.recipeProcess.addEventListener("change", () => {
+    if (!activeRecipeDraft) return;
+    activeRecipeDraft.processName = ui.recipeProcess.value;
+    renderRecipeMaterialsEditor();
+  });
+  ui.recipeMaterialsEditor.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-recipe-remove]");
+    if (!button || !activeRecipeDraft) return;
+    activeRecipeDraft.items.splice(Number(button.dataset.recipeRemove), 1);
+    renderRecipeMaterialsEditor();
+  });
+  ui.saveRecipeButton.addEventListener("click", saveRecipeEditor);
+  ui.recipeDetailReuseButton.addEventListener("click", () => {
+    const recipe = findRecipe(ui.recipeDetailId.value);
+    if (!recipe) return;
+    ui.recipeDetailDialog.close();
+    openRecipeEditor(recipe);
+  });
+  ui.recipeDetailEditButton.addEventListener("click", () => {
+    const recipe = findRecipe(ui.recipeDetailId.value);
+    if (!recipe) return;
+    ui.recipeDetailDialog.close();
+    openRecipeEditor(recipe);
+  });
+  ui.recipeDetailDeleteButton.addEventListener("click", () => deleteRecipe(ui.recipeDetailId.value));
 
   ["formulaN", "formulaP", "formulaK", "maxMaterialCount", "nutrientDrop", "chlorideGrade", "waterSolublePMin", "finishedMoisture", "processingFee"].forEach((id) => {
     ui[id].addEventListener("input", () => {
@@ -410,10 +495,12 @@ function bindEvents() {
 }
 
 function renderProcessOptions() {
-  ui.processSelect.innerHTML = state.processes
+  const options = state.processes
     .map((process) => `<option value="${escapeHtml(process.name)}">${escapeHtml(process.name)}</option>`)
     .join("");
+  ui.processSelect.innerHTML = options;
   ui.processSelect.value = state.processName;
+  if (ui.recipeProcess) ui.recipeProcess.innerHTML = options;
 }
 
 function renderMaterialCategoryOptions() {
@@ -430,16 +517,18 @@ function renderAll() {
   renderTargets();
   renderConstraints();
   renderMaterials();
+  renderRecipes();
 }
 
 function switchTab(tabName) {
-  state.activeTab = tabName === "materials" ? "materials" : "recommendations";
+  state.activeTab = ["recommendations", "materials", "recipes"].includes(tabName) ? tabName : "recommendations";
   renderTabState();
+  if (state.activeTab === "recipes") renderRecipes();
   saveState();
 }
 
 function renderTabState() {
-  const activeTab = state.activeTab === "materials" ? "materials" : "recommendations";
+  const activeTab = ["recommendations", "materials", "recipes"].includes(state.activeTab) ? state.activeTab : "recommendations";
   ui.tabButtons?.forEach((button) => {
     const isActive = button.dataset.tab === activeTab;
     button.classList.toggle("is-active", isActive);
@@ -447,6 +536,7 @@ function renderTabState() {
   });
   ui.recommendationsView.hidden = activeTab !== "recommendations";
   ui.materialsView.hidden = activeTab !== "materials";
+  ui.recipesView.hidden = activeTab !== "recipes";
 }
 
 function renderProcessingFeeOptions() {
@@ -782,6 +872,9 @@ function renderCandidate(candidate, index, settings) {
         <div class="primary-metric cost-metric"><span>实际成本</span><strong>${formatCurrency(candidate.actualCost)}</strong></div>
         <div class="primary-metric"><span>总养分</span><strong>${formatNumber(candidate.metrics.folded["总养分"], 2)}%</strong></div>
         ${controlMetrics}
+      </div>
+      <div class="result-card-actions">
+        <button type="button" class="primary" data-action="save-recipe" data-candidate-index="${index}">保存配方</button>
       </div>
       <details class="result-details">
         <summary>
@@ -1914,6 +2007,300 @@ function metricDisplayList(candidate, process) {
   return names;
 }
 
+function recipeSourceLabel(source) {
+  return source === "recommended" ? "推荐生成" : "手动录入";
+}
+
+function recipeMaterialSnapshot(item) {
+  const material = clone(item.material || {});
+  return {
+    id: item.id,
+    name: item.name || material.name || item.id,
+    category: item.category || material.category || "",
+    price: toNumber(item.price, material.price || 0),
+    kg: toNumber(item.kg, 0),
+    actualKg: toNumber(item.actualKg, item.kg || 0),
+    cost: toNumber(item.cost, 0),
+    material
+  };
+}
+
+function recipeSnapshotFromCandidate(candidate, process, settings, name, note) {
+  return {
+    id: `RECIPE-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: name || `${settings.formulaText || "未命名"} ${process.name}方案`,
+    source: "recommended",
+    processName: process.name,
+    formulaText: settings.formulaText || "",
+    note: note || "",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    targetSnapshot: clone(settings),
+    items: candidate.items.filter((item) => item.kg > 0.05).map(recipeMaterialSnapshot),
+    result: {
+      standardCost: candidate.standardCost,
+      actualCost: candidate.actualCost,
+      yieldKg: candidate.yieldKg,
+      yieldRate: candidate.yieldRate,
+      theoreticalKg: candidate.theoreticalKg,
+      metrics: clone(candidate.metrics)
+    }
+  };
+}
+
+function recipeDraftFromCandidate(candidate, name, note) {
+  const process = currentProcess();
+  const settings = currentSettings();
+  return {
+    ...recipeSnapshotFromCandidate(candidate, process, settings, name, note),
+    id: "",
+    createdAt: "",
+    updatedAt: ""
+  };
+}
+
+function recipeDraftFromRecipe(recipe) {
+  return clone(recipe);
+}
+
+function findRecipe(id) {
+  return state.recipes.find((recipe) => recipe.id === id);
+}
+
+function openRecipeSaveDialog(candidateIndex) {
+  const candidate = latestCandidates[candidateIndex];
+  if (!candidate) return;
+  const process = currentProcess();
+  const settings = currentSettings();
+  ui.recipeSaveCandidateIndex.value = String(candidateIndex);
+  ui.recipeSaveName.value = `${settings.formulaText || "未命名"} ${process.name}方案 ${candidateIndex + 1}`;
+  ui.recipeSaveNote.value = "";
+  ui.recipeSaveSummary.innerHTML = `
+    <div class="recipe-preview-grid">
+      <span>工艺</span><strong>${escapeHtml(process.name)}</strong>
+      <span>配合式</span><strong>${escapeHtml(settings.formulaText || "-")}</strong>
+      <span>实际成本</span><strong>${formatCurrency(candidate.actualCost)}</strong>
+      <span>原料数量</span><strong>${candidate.items.filter((item) => item.kg > 0.05).length} 种</strong>
+    </div>`;
+  ui.recipeSaveDialog.showModal();
+}
+
+function confirmRecommendedRecipeSave() {
+  const candidateIndex = Number(ui.recipeSaveCandidateIndex.value);
+  const candidate = latestCandidates[candidateIndex];
+  if (!candidate) return;
+  const recipe = recipeSnapshotFromCandidate(
+    candidate,
+    currentProcess(),
+    currentSettings(),
+    ui.recipeSaveName.value.trim(),
+    ui.recipeSaveNote.value.trim()
+  );
+  state.recipes.unshift(recipe);
+  saveState();
+  ui.recipeSaveDialog.close();
+  renderRecipes();
+  showToast("配方已保存");
+}
+
+function openRecipeEditor(recipeOrDraft) {
+  const draft = recipeOrDraft
+    ? (recipeOrDraft.id ? recipeDraftFromRecipe(recipeOrDraft) : clone(recipeOrDraft))
+    : {
+      id: "",
+      name: "",
+      source: "manual",
+      processName: state.processName,
+      formulaText: "",
+      note: "",
+      targetSnapshot: clone(currentSettings()),
+      items: [{ id: "", kg: 0 }]
+    };
+  draft.items ||= [{ id: "", kg: 0 }];
+  activeRecipeDraft = draft;
+  ui.recipeDialogTitle.textContent = draft.id ? "编辑配方" : "新建配方";
+  ui.recipeDialogHint.textContent = `${recipeSourceLabel(draft.source)}，按 1000 kg/t 录入原料用量。`;
+  ui.recipeEditId.value = draft.id || "";
+  ui.recipeSource.value = draft.source || "manual";
+  ui.recipeName.value = draft.name || "";
+  ui.recipeProcess.value = draft.processName || state.processName;
+  ui.recipeFormula.value = draft.formulaText || "";
+  ui.recipeNote.value = draft.note || "";
+  renderRecipeMaterialsEditor();
+  ui.recipeDialog.showModal();
+}
+
+function recipeProcess() {
+  return state.processes.find((process) => process.name === ui.recipeProcess.value) || currentProcess();
+}
+
+function materialForRecipeItem(item, process) {
+  return process.materials.find((material) => material.id === item.id) || item.material || null;
+}
+
+function renderRecipeMaterialsEditor() {
+  if (!activeRecipeDraft) return;
+  const process = recipeProcess();
+  const materials = process.materials;
+  ui.recipeMaterialsEditor.innerHTML = activeRecipeDraft.items.map((item, index) => {
+    const selectedMaterial = materialForRecipeItem(item, process);
+    const options = materials.map((material) => `<option value="${escapeHtml(material.id)}" ${material.id === item.id ? "selected" : ""}>${escapeHtml(material.name)}</option>`).join("");
+    const fallback = item.id && !materials.some((material) => material.id === item.id)
+      ? `<option value="${escapeHtml(item.id)}" selected>${escapeHtml(item.name || item.id)}（已保存快照）</option>`
+      : "";
+    return `
+      <div class="recipe-material-row" data-recipe-index="${index}">
+        <select data-recipe-material aria-label="第 ${index + 1} 项原料"><option value="">请选择原料</option>${fallback}${options}</select>
+        <input type="number" min="0" step="1" data-recipe-kg aria-label="第 ${index + 1} 项用量 kg/t" value="${escapeHtml(formatInput(item.kg))}" placeholder="kg/t">
+        <button type="button" data-recipe-remove="${index}" class="danger" aria-label="删除第 ${index + 1} 项">删除</button>
+      </div>`;
+  }).join("");
+  updateRecipeEditorPreview();
+}
+
+function collectRecipeEditorItems() {
+  const process = recipeProcess();
+  return Array.from(ui.recipeMaterialsEditor.querySelectorAll(".recipe-material-row")).map((row) => {
+    const id = row.querySelector("[data-recipe-material]")?.value || "";
+    const kg = toNumber(row.querySelector("[data-recipe-kg]")?.value, 0);
+    const material = process.materials.find((item) => item.id === id) || activeRecipeDraft.items[Number(row.dataset.recipeIndex)]?.material;
+    return material ? recipeMaterialSnapshot({ ...material, id: material.id, kg, material }) : { id, kg };
+  }).filter((item) => item.id);
+}
+
+function calculateRecipeResult(draft, items) {
+  const process = state.processes.find((item) => item.name === draft.processName) || currentProcess();
+  const quantities = new Map(items.map((item) => [item.id, item.kg]));
+  return calculateFormula(
+    process,
+    quantities,
+    toNumber(draft.targetSnapshot?.finishedMoisture, process.finishedMoisture),
+    toNumber(draft.targetSnapshot?.processingFee, process.processingFee)
+  );
+}
+
+function updateRecipeEditorPreview() {
+  if (!activeRecipeDraft) return;
+  const items = collectRecipeEditorItems();
+  const total = items.reduce((sum, item) => sum + item.kg, 0);
+  const result = calculateRecipeResult({ ...activeRecipeDraft, processName: ui.recipeProcess.value }, items);
+  ui.recipeEditorPreview.innerHTML = result
+    ? `<div class="recipe-preview-grid"><span>原料总量</span><strong>${formatNumber(total, 0)} kg/t</strong><span>实际成本</span><strong>${formatCurrency(result.actualCost)}</strong><span>折算总养分</span><strong>${formatMetric("总养分", result.metrics.folded["总养分"])}</strong></div>`
+    : `<span class="muted">请选择原料并录入用量，预览将显示成本和折算指标。</span>`;
+}
+
+function handleRecipeEditorInput(event) {
+  if (event.type === "change" && event.target.matches("[data-recipe-material]")) {
+    const row = event.target.closest(".recipe-material-row");
+    const item = activeRecipeDraft?.items[Number(row?.dataset.recipeIndex)];
+    const material = recipeProcess().materials.find((entry) => entry.id === event.target.value);
+    if (item && material) Object.assign(item, { id: material.id, name: material.name, category: material.category, material: clone(material) });
+  }
+  updateRecipeEditorPreview();
+}
+
+function saveRecipeEditor() {
+  if (!activeRecipeDraft) return;
+  const items = collectRecipeEditorItems().filter((item) => item.kg > 0);
+  const total = items.reduce((sum, item) => sum + item.kg, 0);
+  const name = ui.recipeName.value.trim();
+  if (!name) return showToast("请输入配方名称");
+  if (!items.length) return showToast("请至少选择 1 种原料");
+  if (Math.abs(total - 1000) > 0.01) return showToast("原料总量必须为 1000 kg/t");
+  const draft = { ...activeRecipeDraft, name, processName: ui.recipeProcess.value, formulaText: ui.recipeFormula.value.trim(), note: ui.recipeNote.value.trim(), items };
+  const result = calculateRecipeResult(draft, items);
+  if (!result) return showToast("配方原料用量无法计算");
+  const now = new Date().toISOString();
+  const recipe = {
+    ...draft,
+    id: draft.id || `RECIPE-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    createdAt: draft.createdAt || now,
+    updatedAt: now,
+    targetSnapshot: clone(draft.targetSnapshot || currentSettings()),
+    items: result.items.filter((item) => item.kg > 0.05).map(recipeMaterialSnapshot),
+    result: {
+      standardCost: result.standardCost,
+      actualCost: result.actualCost,
+      yieldKg: result.yieldKg,
+      yieldRate: result.yieldRate,
+      theoreticalKg: result.theoreticalKg,
+      metrics: clone(result.metrics)
+    }
+  };
+  const existingIndex = state.recipes.findIndex((entry) => entry.id === recipe.id);
+  if (existingIndex >= 0) state.recipes.splice(existingIndex, 1, recipe);
+  else state.recipes.unshift(recipe);
+  saveState();
+  activeRecipeDraft = null;
+  ui.recipeDialog.close();
+  renderRecipes();
+  showToast("配方已保存");
+}
+
+function renderRecipes() {
+  if (!ui.recipesList) return;
+  if (!state.recipes.length) {
+    ui.recipesList.innerHTML = `<div class="status">还没有保存的配方，推荐结果或新建配方后会显示在这里。</div>`;
+    return;
+  }
+  ui.recipesList.innerHTML = state.recipes.map((recipe) => `
+    <article class="recipe-list-item">
+      <div class="recipe-list-main">
+        <div class="recipe-list-title"><strong>${escapeHtml(recipe.name || "未命名配方")}</strong><span class="recipe-source-badge">${recipeSourceLabel(recipe.source)}</span></div>
+        <div class="recipe-list-meta"><span>${escapeHtml(recipe.processName || "-")}</span><span>${escapeHtml(recipe.formulaText || "未填写配合式")}</span><span>${recipe.items?.length || 0} 种原料</span><span>${formatCurrency(recipe.result?.actualCost)}</span></div>
+        <small class="muted">最近更新：${escapeHtml(formatDateTime(recipe.updatedAt || recipe.createdAt))}</small>
+      </div>
+      <div class="recipe-list-actions">
+        <button type="button" data-action="recipe-detail" data-recipe-id="${escapeHtml(recipe.id)}">查看明细</button>
+        <button type="button" data-action="recipe-edit" data-recipe-id="${escapeHtml(recipe.id)}">编辑</button>
+        <button type="button" data-action="recipe-reuse" data-recipe-id="${escapeHtml(recipe.id)}">再次使用</button>
+        <button type="button" class="danger" data-action="recipe-delete" data-recipe-id="${escapeHtml(recipe.id)}">删除</button>
+      </div>
+    </article>`).join("");
+}
+
+function handleRecipeListAction(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const recipe = findRecipe(button.dataset.recipeId);
+  if (!recipe) return;
+  const action = button.dataset.action;
+  if (action === "recipe-detail") openRecipeDetail(recipe);
+  if (action === "recipe-edit" || action === "recipe-reuse") openRecipeEditor(recipe);
+  if (action === "recipe-delete") deleteRecipe(recipe.id);
+}
+
+function openRecipeDetail(recipe) {
+  ui.recipeDetailId.value = recipe.id;
+  ui.recipeDetailTitle.textContent = recipe.name || "配方明细";
+  ui.recipeDetailMeta.textContent = `${recipeSourceLabel(recipe.source)} · ${recipe.processName || "-"} · ${formatDateTime(recipe.updatedAt || recipe.createdAt)}`;
+  const metrics = recipe.result?.metrics?.folded || {};
+  const metricNames = ["N", "P", "K", "总养分", "氯离子", "含水量", "PH值", "水溶磷", "水不溶物"]
+    .filter((name) => Number.isFinite(Number(metrics[name])));
+  ui.recipeDetailContent.innerHTML = `
+    <div class="recipe-detail-summary"><span>配合式</span><strong>${escapeHtml(recipe.formulaText || "-")}</strong><span>实际成本</span><strong>${formatCurrency(recipe.result?.actualCost)}</strong><span>备注</span><strong>${escapeHtml(recipe.note || "-")}</strong></div>
+    <div class="table-scroll"><table class="data-table recipe-detail-table"><thead><tr><th>原料</th><th>类别</th><th>kg/t</th><th>单价</th><th>成本</th></tr></thead><tbody>${(recipe.items || []).map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.category)}</td><td>${formatNumber(item.kg, 0)}</td><td>${formatCurrency(item.price)}</td><td>${formatCurrency(item.cost)}</td></tr>`).join("")}</tbody></table></div>
+    <div class="table-scroll"><table class="data-table compact-table recipe-detail-table"><thead><tr><th>指标</th><th>折算后</th></tr></thead><tbody>${metricNames.map((name) => `<tr><td>${escapeHtml(name)}</td><td>${formatMetric(name, Number(metrics[name]))}</td></tr>`).join("")}</tbody></table></div>`;
+  ui.recipeDetailDialog.showModal();
+}
+
+function deleteRecipe(id) {
+  const recipe = findRecipe(id);
+  if (!recipe || !confirm(`删除配方“${recipe.name || "未命名配方"}”？`)) return;
+  state.recipes = state.recipes.filter((entry) => entry.id !== id);
+  saveState();
+  if (ui.recipeDetailDialog.open) ui.recipeDetailDialog.close();
+  renderRecipes();
+  showToast("配方已删除");
+}
+
+function formatDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
 function exportData() {
   const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -1933,6 +2320,8 @@ function importData(event) {
       const imported = JSON.parse(reader.result);
       if (!Array.isArray(imported.processes) || !imported.settings) throw new Error("bad data");
       state = imported;
+      state.recipes ||= [];
+      state.activeTab = ["recommendations", "materials", "recipes"].includes(state.activeTab) ? state.activeTab : "recommendations";
       saveState();
       renderProcessOptions();
       renderAll();

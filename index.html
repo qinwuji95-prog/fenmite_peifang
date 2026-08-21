@@ -18,6 +18,7 @@
     <nav class="tabs" role="tablist" aria-label="主功能">
       <button class="tab is-active" type="button" role="tab" aria-selected="true" data-tab="recommendations">推荐配方</button>
       <button class="tab" type="button" role="tab" aria-selected="false" data-tab="materials">原料维护</button>
+      <button class="tab" type="button" role="tab" aria-selected="false" data-tab="recipes">我的配方</button>
     </nav>
 
     <section id="recommendationsView" class="tab-panel" role="tabpanel">
@@ -160,6 +161,19 @@
       </div>
     </section>
 
+    <section id="recipesView" class="tab-panel is-hidden" role="tabpanel" hidden>
+      <section class="panel recipes-panel">
+        <div class="panel-title">
+          <div>
+            <h2>我的配方</h2>
+            <p class="panel-hint">保存推荐结果或录入自己的配方，原料参数按保存时的快照保留。</p>
+          </div>
+          <button id="newRecipeButton" class="primary" type="button">新建配方</button>
+        </div>
+        <div id="recipesList" class="recipes-list"></div>
+      </section>
+    </section>
+
     <section id="materialsView" class="tab-panel is-hidden" role="tabpanel" hidden>
       <section id="materialsPanel" class="panel materials-panel">
         <div class="panel-title">
@@ -236,6 +250,76 @@
         <div class="dialog-actions">
           <button id="saveResultMaterialButton" class="primary" type="button">保存参数</button>
           <button type="submit" value="close">取消</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="recipeSaveDialog" class="recipe-dialog recipe-save-dialog">
+      <form method="dialog" class="recipe-dialog-form">
+        <div class="dialog-header">
+          <div>
+            <h2>保存推荐配方</h2>
+            <p class="panel-hint">确认保存，或先编辑配方名称和原料用量。</p>
+          </div>
+          <button type="submit" value="cancel" aria-label="关闭">关闭</button>
+        </div>
+        <input id="recipeSaveCandidateIndex" type="hidden">
+        <label class="field"><span>配方名称</span><input id="recipeSaveName" type="text"></label>
+        <label class="field recipe-note-field"><span>备注</span><textarea id="recipeSaveNote" rows="3"></textarea></label>
+        <div id="recipeSaveSummary" class="recipe-summary-preview"></div>
+        <div class="dialog-actions">
+          <button id="recipeEditButton" type="button">编辑配方</button>
+          <button id="recipeConfirmSaveButton" class="primary" type="button">确认保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="recipeDialog" class="recipe-dialog">
+      <form method="dialog" class="recipe-dialog-form">
+        <div class="dialog-header">
+          <div>
+            <h2 id="recipeDialogTitle">新建配方</h2>
+            <p id="recipeDialogHint" class="panel-hint">按 1000 kg/t 录入原料用量。</p>
+          </div>
+          <button type="submit" value="cancel" aria-label="关闭">关闭</button>
+        </div>
+        <input id="recipeEditId" type="hidden">
+        <input id="recipeSource" type="hidden">
+        <div class="recipe-basic-grid">
+          <label class="field"><span>配方名称</span><input id="recipeName" type="text"></label>
+          <label class="field"><span>工艺</span><select id="recipeProcess"></select></label>
+          <label class="field"><span>配合式</span><input id="recipeFormula" type="text" placeholder="20-8-10"></label>
+        </div>
+        <label class="field recipe-note-field"><span>备注</span><textarea id="recipeNote" rows="2"></textarea></label>
+        <div class="dialog-section-title">
+          <h3>原料用量</h3>
+          <button id="addRecipeMaterialButton" type="button">增加原料</button>
+        </div>
+        <div id="recipeMaterialsEditor" class="recipe-materials-editor"></div>
+        <div id="recipeEditorPreview" class="recipe-summary-preview"></div>
+        <div class="dialog-actions">
+          <button type="submit" value="cancel">取消</button>
+          <button id="saveRecipeButton" class="primary" type="button">保存配方</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="recipeDetailDialog" class="recipe-dialog recipe-detail-dialog">
+      <form method="dialog" class="recipe-dialog-form">
+        <div class="dialog-header">
+          <div>
+            <h2 id="recipeDetailTitle">配方明细</h2>
+            <p id="recipeDetailMeta" class="panel-hint"></p>
+          </div>
+          <button type="submit" value="close" aria-label="关闭">关闭</button>
+        </div>
+        <div id="recipeDetailContent" class="recipe-detail-content"></div>
+        <input id="recipeDetailId" type="hidden">
+        <div class="dialog-actions">
+          <button id="recipeDetailReuseButton" type="button">再次使用</button>
+          <button id="recipeDetailEditButton" type="button">编辑</button>
+          <button id="recipeDetailDeleteButton" class="danger" type="button">删除</button>
+          <button type="submit" value="close">关闭</button>
         </div>
       </form>
     </dialog>
