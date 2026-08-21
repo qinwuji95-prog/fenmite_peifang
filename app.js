@@ -25,6 +25,8 @@ const NUTRIENT_PRIORITY_OPTIONS = [
 ];
 
 const SINGLE_NUTRIENT_STANDARD_TOLERANCE = 1.5;
+const MIN_MATERIAL_KG = 50;
+const MIN_MATERIAL_PERCENT = MIN_MATERIAL_KG / 10;
 const CHLORIDE_GRADES = {
   sulfur: { label: "硫基", maxExclusive: 3 },
   low: { label: "低氯", minInclusive: 13, maxInclusive: 14.5 },
@@ -1141,7 +1143,7 @@ function generateRecommendations(process, settings) {
   const chlorideGrade = CHLORIDE_GRADES[settings.chlorideGrade] || CHLORIDE_GRADES.medium;
   const materials = process.materials.filter((material) => (
     material.enabled &&
-    material.maxKg > 0 &&
+    material.maxKg >= MIN_MATERIAL_KG &&
     (!Number.isFinite(waterSolubleTarget) || prop(material, "N") > 0 || prop(material, "P") > 0 || prop(material, "K") > 0)
   ));
   if (!materials.length) {
@@ -1163,7 +1165,21 @@ function generateRecommendations(process, settings) {
     });
   }
 
-  const candidates = [];
+  const lowMaterialResult = generateLowMaterialRecommendations(process, settings, {
+    materials,
+    maxMaterialCount: Math.min(maxMaterialCount, 3),
+    targets,
+    ranges,
+    totalNutrientsMin,
+    waterSolubleTarget,
+    chlorideGrade,
+    finishedMoisture,
+    processingFee,
+    requiredIds,
+    nutrientPriority,
+    searchBudget: 12000
+  });
+  const candidates = [...lowMaterialResult.candidates];
   const materialCounts = [];
   for (let count = Number.isFinite(waterSolubleTarget) ? maxMaterialCount : 4;
     Number.isFinite(waterSolubleTarget) ? count >= 4 : count <= maxMaterialCount;
@@ -1187,7 +1203,6 @@ function generateRecommendations(process, settings) {
   let searchSteps = 0;
   let stopSearch = false;
   for (const solveWaterTarget of waterTargetLevels) {
-    const levelStart = candidates.length;
     for (const materialCount of materialCounts) {
       const combos = combinations(materials.length, materialCount).filter((combo) => {
         const selected = combo.map((index) => materials[index]);
@@ -1219,7 +1234,8 @@ function generateRecommendations(process, settings) {
 
               const candidate = calculateFormula(process, quantities, finishedMoisture, processingFee);
               if (!candidate) continue;
-              const usedItems = candidate.items.filter((item) => item.kg > 0.05);
+              if (!meetsMaterialRatioLowerBound(candidate)) continue;
+              const usedItems = candidate.items;
               if (usedItems.length > maxMaterialCount) continue;
               if (!requiredIds.every((id) => usedItems.some((item) => item.id === id))) continue;
               if (!targetsMatch(candidate, ranges, totalNutrientsMin, "folded")) continue;
@@ -1234,7 +1250,6 @@ function generateRecommendations(process, settings) {
         if (stopSearch) break;
       }
       if (stopSearch) break;
-      if (candidates.length > levelStart && !Number.isFinite(solveWaterTarget) && !nutrientPriority.length && !Number.isFinite(chlorideTargetLevels[0])) break;
     }
     if (stopSearch) break;
   }
@@ -1262,14 +1277,16 @@ function generateLowMaterialRecommendations(process, settings, options) {
     finishedMoisture,
     processingFee,
     requiredIds,
-    nutrientPriority
+    nutrientPriority,
+    searchBudget: requestedSearchBudget
   } = options;
   const candidateLimit = nutrientPriority.length
     ? (Number.isFinite(waterSolubleTarget) ? 24 : 48)
     : (Number.isFinite(waterSolubleTarget) ? 8 : 12);
-  const searchBudget = nutrientPriority.length
+  const defaultSearchBudget = nutrientPriority.length
     ? (Number.isFinite(waterSolubleTarget) ? 150000 : 250000)
     : (Number.isFinite(waterSolubleTarget) ? 200000 : 300000);
+  const searchBudget = Number.isFinite(requestedSearchBudget) ? requestedSearchBudget : defaultSearchBudget;
   const chlorideTargetLevels = chlorideSolveTargets(chlorideGrade);
   const candidates = [];
   let searchSteps = 0;
@@ -1297,7 +1314,8 @@ function generateLowMaterialRecommendations(process, settings, options) {
         searchSteps += 1;
         const candidate = calculateFormula(process, quantities, finishedMoisture, processingFee);
         if (!candidate) continue;
-        const usedItems = candidate.items.filter((item) => item.kg > 0.05);
+        if (!meetsMaterialRatioLowerBound(candidate)) continue;
+        const usedItems = candidate.items;
         if (usedItems.length > maxMaterialCount) continue;
         if (!requiredIds.every((id) => usedItems.some((item) => item.id === id))) continue;
         if (!targetsMatch(candidate, ranges, totalNutrientsMin, "folded")) continue;
@@ -1322,7 +1340,7 @@ function generateLowMaterialRecommendations(process, settings, options) {
 
 function* enumerateLowMaterialQuantityMaps(materials) {
   const maxPercents = materials.map((material) => Math.floor(toNumber(material.maxKg, 0) / 10));
-  if (maxPercents.some((maxPercent) => maxPercent < 1)) return;
+  if (maxPercents.some((maxPercent) => maxPercent < MIN_MATERIAL_PERCENT)) return;
   const searchOrder = materials
     .map((material, index) => ({ index, price: toNumber(material.price, 0) }))
     .sort((left, right) => right.price - left.price)
@@ -1332,7 +1350,7 @@ function* enumerateLowMaterialQuantityMaps(materials) {
   function* visit(index, remaining) {
     const materialIndex = searchOrder[index];
     if (index === materials.length - 1) {
-      if (remaining < 1 || remaining > maxPercents[materialIndex]) return;
+      if (remaining < MIN_MATERIAL_PERCENT || remaining > maxPercents[materialIndex]) return;
       percents[materialIndex] = remaining;
       const quantities = new Map();
       materials.forEach((material, materialIndex) => {
@@ -1343,11 +1361,11 @@ function* enumerateLowMaterialQuantityMaps(materials) {
     }
 
     const remainingMaterials = materials.length - index - 1;
-    const minimumRemaining = remainingMaterials;
+    const minimumRemaining = remainingMaterials * MIN_MATERIAL_PERCENT;
     const maximumRemaining = searchOrder
       .slice(index + 1)
       .reduce((sum, materialIndex) => sum + maxPercents[materialIndex], 0);
-    const minimum = Math.max(1, remaining - maximumRemaining);
+    const minimum = Math.max(MIN_MATERIAL_PERCENT, remaining - maximumRemaining);
     const maximum = Math.min(maxPercents[materialIndex], remaining - minimumRemaining);
     for (let percent = minimum; percent <= maximum; percent += 1) {
       percents[materialIndex] = percent;
@@ -1356,6 +1374,10 @@ function* enumerateLowMaterialQuantityMaps(materials) {
   }
 
   yield* visit(0, 100);
+}
+
+function meetsMaterialRatioLowerBound(candidate) {
+  return candidate.items.every((item) => item.kg + 0.0001 >= MIN_MATERIAL_KG);
 }
 
 function compareCandidates(left, right, settings, nutrientPriority) {
@@ -1657,7 +1679,7 @@ function solveBoundedMaterialSystem(materials, targets, finishedMoisture, equati
     for (const basisChoice of basisChoices) {
       const extraIndexes = materials.map((_, index) => index).filter((index) => !basisChoice.includes(index));
       const boundOptions = extraIndexes.map((index) => {
-        const minimumKg = Math.min(10, materials[index].maxKg);
+        const minimumKg = Math.min(MIN_MATERIAL_KG, materials[index].maxKg);
         return [...new Set([
           materials[index].maxKg,
           minimumKg,
@@ -1694,7 +1716,7 @@ function solveBoundedMaterialSystem(materials, targets, finishedMoisture, equati
             result[index] = extraValues[extraIndex];
           });
           const valid = result.every((value, index) => {
-            const minimumKg = Math.min(10, materials[index].maxKg);
+            const minimumKg = Math.min(MIN_MATERIAL_KG, materials[index].maxKg);
             return value >= minimumKg - 0.05 && value <= materials[index].maxKg + 0.05;
           });
           if (!valid) return null;
