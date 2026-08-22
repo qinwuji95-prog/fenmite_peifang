@@ -25,6 +25,7 @@ const NUTRIENT_PRIORITY_OPTIONS = [
 ];
 
 const SINGLE_NUTRIENT_STANDARD_TOLERANCE = 1.5;
+const TOTAL_NUTRIENT_SURPLUS_TARGET = 0.4;
 const MIN_MATERIAL_KG = 50;
 const MIN_MATERIAL_PERCENT = MIN_MATERIAL_KG / 10;
 const CHLORIDE_GRADES = {
@@ -1138,7 +1139,11 @@ function generateRecommendations(process, settings) {
   const nutrientDrop = Math.min(Math.max(toNumber(settings.nutrientDrop, 1), 0), SINGLE_NUTRIENT_STANDARD_TOLERANCE);
   const nutrientPriority = normalizeNutrientPriority(settings.nutrientReductionPriority);
   const ranges = buildNutrientRanges(targets, nutrientDrop, nutrientPriority);
-  const totalNutrientsMin = toNumber(settings.totalNutrientsMin, targets.N + targets.P + targets.K);
+  const formulaNutrientTotal = targets.N + targets.P + targets.K;
+  const totalNutrientsMin = Math.max(
+    toNumber(settings.totalNutrientsMin, formulaNutrientTotal),
+    formulaNutrientTotal + TOTAL_NUTRIENT_SURPLUS_TARGET
+  );
   const waterSolubleTarget = supportsWaterSoluble(process) ? optionalNumber(settings.waterSolublePMin) : NaN;
   const chlorideGrade = CHLORIDE_GRADES[settings.chlorideGrade] || CHLORIDE_GRADES.medium;
   const materials = process.materials.filter((material) => (
@@ -1383,6 +1388,9 @@ function meetsMaterialRatioLowerBound(candidate) {
 function compareCandidates(left, right, settings, nutrientPriority) {
   const costDiff = left.actualCost - right.actualCost;
   if (Math.abs(costDiff) > 0.0001) return costDiff;
+
+  const totalNutrientDiff = totalNutrientSurplusExcess(left, settings) - totalNutrientSurplusExcess(right, settings);
+  if (Math.abs(totalNutrientDiff) > 0.0001) return totalNutrientDiff;
 
   const waterDiff = waterSolubleExcess(left, settings) - waterSolubleExcess(right, settings);
   if (Math.abs(waterDiff) > 0.0001) return waterDiff;
@@ -1885,7 +1893,7 @@ function specialMetric(name, items, yieldKg, process, finishedMoisture, theoreti
 
 function targetsMatch(candidate, ranges, totalMin, basis) {
   const metrics = basis === "folded" ? candidate.metrics.folded : candidate.metrics.unfolded;
-  if (metrics["总养分"] + 0.0001 < totalMin) return false;
+  if (metrics["总养分"] <= totalMin + 0.0001) return false;
   return ["N", "P", "K"].every((name) => metrics[name] + 0.0001 >= ranges[name].min && metrics[name] - 0.0001 <= ranges[name].max);
 }
 
@@ -1917,6 +1925,13 @@ function passesStandardSettings(candidate, settings) {
 function passesWaterSolubleTarget(candidate, target) {
   if (!Number.isFinite(target)) return true;
   return candidate.metrics.folded["水溶磷"] + 0.0001 >= target;
+}
+
+function totalNutrientSurplusExcess(candidate, settings) {
+  const targets = parseFormula(settings.formulaText);
+  if (!targets) return Number.POSITIVE_INFINITY;
+  const desiredTotal = targets.N + targets.P + targets.K + TOTAL_NUTRIENT_SURPLUS_TARGET;
+  return Math.max(0, candidate.metrics.folded["总养分"] - desiredTotal);
 }
 
 function waterSolubleExcess(candidate, settings) {
